@@ -119,6 +119,12 @@ module Sprockets
     #
     # Returns Enumerator of Assets.
     def find(*args)
+      my_benchmark = {
+        start: Time.now,
+        assets: [],
+        finish: nil,
+      }
+
       unless environment
         raise Error, "manifest requires environment for compilation"
       end
@@ -131,22 +137,89 @@ module Sprockets
       environment = self.environment.cached
 
       paths.each do |path|
+        start_to_get_asset = Time.now
+        puts "\n\nSTART GET ASSETS FOR #{path}"
         environment.find_all_linked_assets(path) do |asset|
           yield asset
         end
+        puts "FINISH GET ASSETS FOR #{path} IN #{Time.now - start_to_get_asset}\n\n"
+        my_benchmark[:assets] << {
+          name: path,
+          ext: asset_type_by_name(path),
+          time: Time.now - start_to_get_asset,
+          type: :path
+        }
       end
+
+      puts "\n*******************************************************"
+      puts "FILTERS"
+      puts "*******************************************************\n"
 
       if filters.any?
         environment.logical_paths do |logical_path, filename|
           if filters.any? { |f| f.call(logical_path, filename) }
+            start_to_get_asset = Time.now
+            puts "\n\nSTART GET ASSETS FOR #{filename}"
             environment.find_all_linked_assets(filename) do |asset|
               yield asset
             end
+            puts "FINISH GET ASSETS FOR #{filename} IN #{Time.now - start_to_get_asset}\n\n"
+            my_benchmark[:assets] << {
+              name: filename,
+              ext: asset_type_by_name(filename),
+              time: Time.now - start_to_get_asset,
+              type: :filter
+            }
           end
         end
       end
 
+      my_benchmark[:finish] = Time.now
+      print_benchmark_results(my_benchmark)
+
       nil
+    end
+
+    def asset_type_by_name(name)
+      return '.js' if /.js.erb/ =~ name
+
+      ext = File.extname(name)
+      return '.css' if ext == '.scss'
+      return '.js' if ext == '.jsx'
+      ext
+    end
+
+    def print_benchmark_results(benchmark)
+      ass = benchmark[:assets]
+      File.open("sprockets-banchmark-#{DateTime.current}", 'w') do |f|
+        f.puts "BENCHMARKING RESULTS: "
+        f.puts "Total time: #{benchmark[:finish] - benchmark[:start]}s"
+        f.puts ''
+
+        f.puts "Total assets processed: #{ass.count}"
+        f.puts ''
+
+        f.puts "Top 30 time-consuming assets: "
+        top_consuming = ass.sort_by{|a| a[:time]}.reverse[0...30]
+        top_consuming.each { |a| f.puts "#{a[:time]} - #{a[:name]} (#{a[:type]})\n" }
+        f.puts ''
+
+        f.puts "Most time-consuming assets types: "
+        by_type = ass.group_by { |a| a[:ext] }
+        time_consuming_by_type = by_type.map { |type, assets| [type, assets.sum{|a| a[:time]}] }.sort_by{|x| x[1] }.reverse
+        time_consuming_by_type.each { |a| f.puts "#{a[0]}-#{a[1]}" }
+
+        path_assets = ass.select { |a| a[:type] == :path }
+        path_assets_time = path_assets.sum { |a| a[:time] }
+        f.puts "Total time in regular assets: #{path_assets_time}"
+
+        filter_assets = ass.select { |a| a[:type] == :filter }
+        filter_assets_time = filter_assets.sum { |a| a[:time] }
+        f.puts "Total time in filter assets: #{filter_assets_time}"
+        f.puts ''
+        f.puts 'benchmark dump is below: '
+        f.write(YAML.dump(benchmark))
+      end
     end
 
     # Public: Find the source of assets by paths.
